@@ -3,7 +3,12 @@
     .version = "0.0.0",
     .fingerprint = 0xb6e88e9cd19308ab,
     .minimum_zig_version = "0.15.1",
-    .dependencies = .{},
+    .dependencies = .{
+        .zigwin32 = .{
+            .url = "git+https://github.com/marlersoft/zigwin32#9d399c0895de4746c1fcab366841e2ab031b0429",
+            .hash = "zigwin32-25.0.28-preview-AAAAANd_5APbcon3QqoYfLKnJ13fiBGJSGq9YrVZsfI-",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

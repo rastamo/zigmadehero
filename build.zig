@@ -4,12 +4,17 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const zigwin32 = b.dependency("zigwin32", .{}).module("win32");
+
     const exe = b.addExecutable(.{
         .name = "zigmadehero",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zigwin32", .module = zigwin32 },
+            },
         }),
     });
 

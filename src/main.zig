@@ -1,5 +1,6 @@
-const std = @import("std");
+const win32 = @import("zigwin32").everything;
+pub const UNICODE = true;
 
 pub fn main() !void {
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+    _ = win32.MessageBoxA(null, "Hello, Win32!", "Testing window", win32.MB_ICONINFORMATION);
 }
