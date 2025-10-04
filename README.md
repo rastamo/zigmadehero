@@ -1,3 +1,3 @@
 # Zigmade Hero
 
-Following along Casey Muratori's [Handmade Hero](https://handmadehero.org/) series.
+Following along Casey Muratori's [Handmade Hero](https://guide.handmadehero.org/) series.
