@@ -3,7 +3,67 @@ pub const UNICODE = true;
 
 // Followed examples from: https://github.com/marlersoft/zigwin32gen
 
-var color: win32.ROP_CODE = win32.WHITENESS;
+var running: bool = true;
+var BitmapInfo: win32.BITMAPINFO = undefined;
+var bitmapmemory: ?*anyopaque = undefined;
+var BitmapHandle: ?win32.HBITMAP = undefined;
+var BitmapDeviceContext: ?win32.HDC = undefined;
+
+fn win32ResizeDIBSection(width: i32, height: i32) void {
+    // TODO: Bulletproof this.
+    // Maybe don't free first, free after, then free first if that fails.
+
+    if (BitmapHandle) |handle| {
+        _ = win32.DeleteObject(handle);
+    }
+    if (BitmapDeviceContext == null) {
+        // TODO: Should we recreate these under certain special cirumstances.
+        BitmapDeviceContext = win32.CreateCompatibleDC(undefined);
+    }
+    BitmapInfo = .{
+        .bmiHeader = .{
+            .biSize = @sizeOf(win32.BITMAPINFOHEADER),
+            .biWidth = width,
+            .biHeight = height,
+            .biPlanes = 1,
+            .biBitCount = 32,
+            .biCompression = win32.BI_RGB,
+            .biSizeImage = 0,
+            .biXPelsPerMeter = 0,
+            .biYPelsPerMeter = 0,
+            .biClrUsed = 0,
+            .biClrImportant = 0,
+        },
+        .bmiColors = undefined,
+    };
+    // TODO: Based on ssylvan's suggestion, maybe we can just allocate this ourselves?
+    _ = win32.CreateDIBSection(
+        BitmapDeviceContext,
+        &BitmapInfo,
+        win32.DIB_RGB_COLORS,
+        &bitmapmemory,
+        null,
+        0,
+    );
+}
+
+fn win32UpdateWindow(DeviceContext: ?win32.HDC, x: i32, y: i32, width: i32, height: i32) void {
+    _ = win32.StretchDIBits(
+        DeviceContext,
+        x,
+        y,
+        width,
+        height,
+        x,
+        y,
+        width,
+        height,
+        bitmapmemory,
+        &BitmapInfo,
+        win32.DIB_RGB_COLORS,
+        win32.SRCCOPY,
+    );
+}
 
 fn mainWindowCallback(
     Window: win32.HWND,
@@ -14,30 +74,31 @@ fn mainWindowCallback(
     var result: win32.LRESULT = 0;
     switch (message) {
         win32.WM_SIZE => {
-            win32.OutputDebugStringA("WM_SIZE\n");
-        },
-        win32.WM_DESTROY => {
-            win32.OutputDebugStringA("WM_DESTROY\n");
+            var ClientRect: win32.RECT = undefined;
+            _ = win32.GetClientRect(Window, &ClientRect);
+            const width = ClientRect.right - ClientRect.left;
+            const height = ClientRect.bottom - ClientRect.top;
+            win32ResizeDIBSection(width, height);
         },
         win32.WM_CLOSE => {
-            win32.OutputDebugStringA("WM_CLOSE\n");
+            // TODO: Handle this with a message to the user?
+            running = false;
         },
         win32.WM_ACTIVATEAPP => {
             win32.OutputDebugStringA("WM_ACTIVATEAPP\n");
         },
+        win32.WM_DESTROY => {
+            // TODO: Handle this as an error - recreate window?
+            running = false;
+        },
         win32.WM_PAINT => {
             var Paint: win32.PAINTSTRUCT = undefined;
-            const DeviceContext = win32.BeginPaint(Window, &Paint);
+            const DeviceContext: ?win32.HDC = win32.BeginPaint(Window, &Paint);
             const x = Paint.rcPaint.left;
             const y = Paint.rcPaint.top;
             const width = Paint.rcPaint.right - Paint.rcPaint.left;
             const height = Paint.rcPaint.bottom - Paint.rcPaint.top;
-            if (color == win32.WHITENESS) {
-                color = win32.BLACKNESS;
-            } else {
-                color = win32.WHITENESS;
-            }
-            _ = win32.PatBlt(DeviceContext, x, y, width, height, color);
+            win32UpdateWindow(DeviceContext, x, y, width, height);
             _ = win32.EndPaint(Window, &Paint);
         },
         else => {
@@ -86,7 +147,7 @@ pub export fn wWinMain(
             null,
         );
         if (WindowHandle) |_| {
-            while (true) {
+            while (running) {
                 var message: win32.MSG = undefined;
                 const message_result: win32.BOOL = win32.GetMessageW(&message, null, 0, 0);
                 if (message_result > 0) {
