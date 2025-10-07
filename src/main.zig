@@ -5,26 +5,48 @@ pub const UNICODE = true;
 
 var running: bool = true;
 var BitmapInfo: win32.BITMAPINFO = undefined;
-var bitmapmemory: ?*anyopaque = undefined;
-var BitmapHandle: ?win32.HBITMAP = undefined;
-var BitmapDeviceContext: ?win32.HDC = undefined;
+var bitmap_memory: ?*anyopaque = undefined;
+var bitmap_width: i32 = undefined;
+var bitmap_height: i32 = undefined;
+const bytes_per_pixel: i32 = 4;
+
+fn renderWeirdGradient(x_offset: usize, y_offset: usize) void {
+    const width = bitmap_width;
+    const height = bitmap_height;
+
+    const pitch = @as(usize, @intCast(width)) * bytes_per_pixel;
+    var x: usize = 0;
+    var y: usize = 0;
+    var row: [*]u8 = @ptrCast(bitmap_memory);
+    while (y < height) : (y += 1) {
+        var pixel: [*]u32 = @ptrCast(@alignCast(row));
+        while (x < width) : (x += 1) {
+            const blue: u8 = (@as(u8, @intCast((x + x_offset) % 255)));
+            const green: u8 = (@as(u8, @intCast((y + y_offset) % 255)));
+
+            pixel[x] = (@as(u16, green) << 8 | blue);
+        }
+        x = 0;
+        row += pitch;
+    }
+}
 
 fn win32ResizeDIBSection(width: i32, height: i32) void {
     // TODO: Bulletproof this.
     // Maybe don't free first, free after, then free first if that fails.
 
-    if (BitmapHandle) |handle| {
-        _ = win32.DeleteObject(handle);
+    if (bitmap_memory) |mem| {
+        _ = win32.VirtualFree(mem, 0, win32.MEM_RELEASE);
     }
-    if (BitmapDeviceContext == null) {
-        // TODO: Should we recreate these under certain special cirumstances.
-        BitmapDeviceContext = win32.CreateCompatibleDC(undefined);
-    }
+
+    bitmap_width = width;
+    bitmap_height = height;
+
     BitmapInfo = .{
         .bmiHeader = .{
             .biSize = @sizeOf(win32.BITMAPINFOHEADER),
-            .biWidth = width,
-            .biHeight = height,
+            .biWidth = bitmap_width,
+            .biHeight = -bitmap_height,
             .biPlanes = 1,
             .biBitCount = 32,
             .biCompression = win32.BI_RGB,
@@ -36,29 +58,25 @@ fn win32ResizeDIBSection(width: i32, height: i32) void {
         },
         .bmiColors = undefined,
     };
-    // TODO: Based on ssylvan's suggestion, maybe we can just allocate this ourselves?
-    _ = win32.CreateDIBSection(
-        BitmapDeviceContext,
-        &BitmapInfo,
-        win32.DIB_RGB_COLORS,
-        &bitmapmemory,
-        null,
-        0,
-    );
+
+    const bitmap_memory_size: i32 = width * height * bytes_per_pixel;
+    bitmap_memory = win32.VirtualAlloc(null, @intCast(bitmap_memory_size), win32.MEM_COMMIT, win32.PAGE_READWRITE);
 }
 
-fn win32UpdateWindow(DeviceContext: ?win32.HDC, x: i32, y: i32, width: i32, height: i32) void {
+fn win32UpdateWindow(DeviceContext: ?win32.HDC, WindowRect: *win32.RECT) void {
+    const window_width = WindowRect.right - WindowRect.left;
+    const window_height = WindowRect.bottom - WindowRect.top;
     _ = win32.StretchDIBits(
         DeviceContext,
-        x,
-        y,
-        width,
-        height,
-        x,
-        y,
-        width,
-        height,
-        bitmapmemory,
+        0,
+        0,
+        bitmap_width,
+        bitmap_height,
+        0,
+        0,
+        window_width,
+        window_height,
+        bitmap_memory,
         &BitmapInfo,
         win32.DIB_RGB_COLORS,
         win32.SRCCOPY,
@@ -94,11 +112,9 @@ fn mainWindowCallback(
         win32.WM_PAINT => {
             var Paint: win32.PAINTSTRUCT = undefined;
             const DeviceContext: ?win32.HDC = win32.BeginPaint(Window, &Paint);
-            const x = Paint.rcPaint.left;
-            const y = Paint.rcPaint.top;
-            const width = Paint.rcPaint.right - Paint.rcPaint.left;
-            const height = Paint.rcPaint.bottom - Paint.rcPaint.top;
-            win32UpdateWindow(DeviceContext, x, y, width, height);
+            var ClientRect: win32.RECT = undefined;
+            _ = win32.GetClientRect(Window, &ClientRect);
+            win32UpdateWindow(DeviceContext, &ClientRect);
             _ = win32.EndPaint(Window, &Paint);
         },
         else => {
@@ -132,7 +148,7 @@ pub export fn wWinMain(
     WindowStyle.VISIBLE = 1;
 
     if (win32.RegisterClassW(&WindowClass) != 0) {
-        const WindowHandle: ?win32.HWND = win32.CreateWindowExW(
+        const Window: ?win32.HWND = win32.CreateWindowExW(
             .{},
             WindowClass.lpszClassName,
             win32.L("Handmade Hero"),
@@ -146,16 +162,27 @@ pub export fn wWinMain(
             instance,
             null,
         );
-        if (WindowHandle) |_| {
+        if (Window) |_| {
+            var x_offset: usize = 0;
+            var y_offset: usize = 0;
             while (running) {
                 var message: win32.MSG = undefined;
-                const message_result: win32.BOOL = win32.GetMessageW(&message, null, 0, 0);
-                if (message_result > 0) {
+                while (win32.PeekMessageW(&message, null, 0, 0, win32.PM_REMOVE) != 0) {
+                    if (message.message == win32.WM_QUIT) {
+                        running = false;
+                    }
                     _ = win32.TranslateMessage(&message);
                     _ = win32.DispatchMessageW(&message);
-                } else {
-                    break;
                 }
+
+                renderWeirdGradient(x_offset, y_offset);
+                const DeviceContext: ?win32.HDC = win32.GetDC(Window);
+                var ClientRect: win32.RECT = undefined;
+                _ = win32.GetClientRect(Window, &ClientRect);
+                win32UpdateWindow(DeviceContext, &ClientRect);
+                _ = win32.ReleaseDC(Window, DeviceContext);
+                x_offset +%= 1;
+                y_offset +%= 1;
             }
         } else {
             // TODO: Logging
