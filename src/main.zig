@@ -4,49 +4,65 @@ pub const UNICODE = true;
 // Followed examples from: https://github.com/marlersoft/zigwin32gen
 
 var running: bool = true;
-var BitmapInfo: win32.BITMAPINFO = undefined;
-var bitmap_memory: ?*anyopaque = undefined;
-var bitmap_width: i32 = undefined;
-var bitmap_height: i32 = undefined;
-const bytes_per_pixel: i32 = 4;
+const Win32OffscreenBuffer = struct {
+    Info: win32.BITMAPINFO,
+    memory: ?*anyopaque,
+    width: i32,
+    height: i32,
+    pitch: i32,
+};
 
-fn renderWeirdGradient(x_offset: usize, y_offset: usize) void {
-    const width = bitmap_width;
-    const height = bitmap_height;
+var GlobalBackBuffer: Win32OffscreenBuffer = .{
+    .Info = undefined,
+    .memory = undefined,
+    .width = undefined,
+    .height = undefined,
+    .pitch = undefined,
+};
 
-    const pitch = @as(usize, @intCast(width)) * bytes_per_pixel;
+fn win32GetWindowDimension(Window: win32.HWND) struct { width: i32, height: i32 } {
+    var ClientRect: win32.RECT = undefined;
+    _ = win32.GetClientRect(Window, &ClientRect);
+    const width = ClientRect.right - ClientRect.left;
+    const height = ClientRect.bottom - ClientRect.top;
+    return .{ .width = width, .height = height };
+}
+
+fn renderWeirdGradient(Buffer: *Win32OffscreenBuffer, x_offset: usize, y_offset: usize) void {
     var x: usize = 0;
     var y: usize = 0;
-    var row: [*]u8 = @ptrCast(bitmap_memory);
-    while (y < height) : (y += 1) {
+    var row: [*]u8 = @ptrCast(Buffer.memory);
+    while (y < Buffer.height) : (y += 1) {
         var pixel: [*]u32 = @ptrCast(@alignCast(row));
-        while (x < width) : (x += 1) {
+        while (x < Buffer.width) : (x += 1) {
             const blue: u8 = (@as(u8, @intCast((x + x_offset) % 255)));
             const green: u8 = (@as(u8, @intCast((y + y_offset) % 255)));
 
             pixel[x] = (@as(u16, green) << 8 | blue);
         }
         x = 0;
-        row += pitch;
+        row += @as(usize, @intCast(Buffer.pitch));
     }
 }
 
-fn win32ResizeDIBSection(width: i32, height: i32) void {
+fn win32ResizeDIBSection(Buffer: *Win32OffscreenBuffer, width: i32, height: i32) void {
     // TODO: Bulletproof this.
     // Maybe don't free first, free after, then free first if that fails.
-
-    if (bitmap_memory) |mem| {
+    if (Buffer.memory) |mem| {
         _ = win32.VirtualFree(mem, 0, win32.MEM_RELEASE);
     }
 
-    bitmap_width = width;
-    bitmap_height = height;
-
-    BitmapInfo = .{
+    Buffer.width = width;
+    Buffer.height = height;
+    // When the biHeight field is negative, this is a the clue to
+    // Windows to treat this bitmap as top-down, not bottom-up, meaning that
+    // the first three bytes of the image are the color for the top left pixel
+    // in the bitmap, not the bottom left!
+    Buffer.Info = .{
         .bmiHeader = .{
             .biSize = @sizeOf(win32.BITMAPINFOHEADER),
-            .biWidth = bitmap_width,
-            .biHeight = -bitmap_height,
+            .biWidth = Buffer.width,
+            .biHeight = -Buffer.height,
             .biPlanes = 1,
             .biBitCount = 32,
             .biCompression = win32.BI_RGB,
@@ -59,25 +75,37 @@ fn win32ResizeDIBSection(width: i32, height: i32) void {
         .bmiColors = undefined,
     };
 
+    const bytes_per_pixel: i32 = 4;
     const bitmap_memory_size: i32 = width * height * bytes_per_pixel;
-    bitmap_memory = win32.VirtualAlloc(null, @intCast(bitmap_memory_size), win32.MEM_COMMIT, win32.PAGE_READWRITE);
+    Buffer.memory = win32.VirtualAlloc(
+        null,
+        @intCast(bitmap_memory_size),
+        win32.MEM_COMMIT,
+        win32.PAGE_READWRITE,
+    );
+    Buffer.pitch = width * bytes_per_pixel;
 }
 
-fn win32UpdateWindow(DeviceContext: ?win32.HDC, WindowRect: *win32.RECT) void {
-    const window_width = WindowRect.right - WindowRect.left;
-    const window_height = WindowRect.bottom - WindowRect.top;
+fn win32DisplayBufferInWindow(
+    DeviceContext: ?win32.HDC,
+    window_width: i32,
+    window_height: i32,
+    Buffer: *Win32OffscreenBuffer,
+) void {
+    // TODO: Aspect ratio correction.
+    // TODO: Play with stretch modes.
     _ = win32.StretchDIBits(
         DeviceContext,
         0,
         0,
-        bitmap_width,
-        bitmap_height,
-        0,
-        0,
         window_width,
         window_height,
-        bitmap_memory,
-        &BitmapInfo,
+        0,
+        0,
+        Buffer.width,
+        Buffer.height,
+        Buffer.memory,
+        &Buffer.Info,
         win32.DIB_RGB_COLORS,
         win32.SRCCOPY,
     );
@@ -91,13 +119,7 @@ fn mainWindowCallback(
 ) callconv(.winapi) win32.LRESULT {
     var result: win32.LRESULT = 0;
     switch (message) {
-        win32.WM_SIZE => {
-            var ClientRect: win32.RECT = undefined;
-            _ = win32.GetClientRect(Window, &ClientRect);
-            const width = ClientRect.right - ClientRect.left;
-            const height = ClientRect.bottom - ClientRect.top;
-            win32ResizeDIBSection(width, height);
-        },
+        win32.WM_SIZE => {},
         win32.WM_CLOSE => {
             // TODO: Handle this with a message to the user?
             running = false;
@@ -112,9 +134,8 @@ fn mainWindowCallback(
         win32.WM_PAINT => {
             var Paint: win32.PAINTSTRUCT = undefined;
             const DeviceContext: ?win32.HDC = win32.BeginPaint(Window, &Paint);
-            var ClientRect: win32.RECT = undefined;
-            _ = win32.GetClientRect(Window, &ClientRect);
-            win32UpdateWindow(DeviceContext, &ClientRect);
+            const Dimensions = win32GetWindowDimension(Window);
+            win32DisplayBufferInWindow(DeviceContext, Dimensions.width, Dimensions.height, &GlobalBackBuffer);
             _ = win32.EndPaint(Window, &Paint);
         },
         else => {
@@ -132,7 +153,7 @@ pub export fn wWinMain(
     _: u32,
 ) callconv(.winapi) c_int {
     const WindowClass: win32.WNDCLASSW = .{
-        .style = .{ .OWNDC = 1, .HREDRAW = 1, .VREDRAW = 1 },
+        .style = .{ .HREDRAW = 1, .VREDRAW = 1, .OWNDC = 1 },
         .lpfnWndProc = mainWindowCallback,
         .cbClsExtra = 0,
         .cbWndExtra = 0,
@@ -143,12 +164,13 @@ pub export fn wWinMain(
         .lpszMenuName = null,
         .lpszClassName = win32.L("HandmadeHeroWindowClass"),
     };
+    win32ResizeDIBSection(&GlobalBackBuffer, 1920, 1080);
 
     var WindowStyle = win32.WS_OVERLAPPEDWINDOW;
     WindowStyle.VISIBLE = 1;
 
     if (win32.RegisterClassW(&WindowClass) != 0) {
-        const Window: ?win32.HWND = win32.CreateWindowExW(
+        const WindowHandle: ?win32.HWND = win32.CreateWindowExW(
             .{},
             WindowClass.lpszClassName,
             win32.L("Handmade Hero"),
@@ -162,7 +184,11 @@ pub export fn wWinMain(
             instance,
             null,
         );
-        if (Window) |_| {
+        if (WindowHandle) |Window| {
+            // Since we specified CS_OWNDC, we can just get one device context and use it forever
+            // because we are not sharing it with anyone.
+            const DeviceContext: ?win32.HDC = win32.GetDC(Window);
+
             var x_offset: usize = 0;
             var y_offset: usize = 0;
             while (running) {
@@ -175,14 +201,17 @@ pub export fn wWinMain(
                     _ = win32.DispatchMessageW(&message);
                 }
 
-                renderWeirdGradient(x_offset, y_offset);
-                const DeviceContext: ?win32.HDC = win32.GetDC(Window);
-                var ClientRect: win32.RECT = undefined;
-                _ = win32.GetClientRect(Window, &ClientRect);
-                win32UpdateWindow(DeviceContext, &ClientRect);
+                renderWeirdGradient(&GlobalBackBuffer, x_offset, y_offset);
+                const Dimensions = win32GetWindowDimension(Window);
+                win32DisplayBufferInWindow(
+                    DeviceContext,
+                    Dimensions.width,
+                    Dimensions.height,
+                    &GlobalBackBuffer,
+                );
                 _ = win32.ReleaseDC(Window, DeviceContext);
                 x_offset +%= 1;
-                y_offset +%= 1;
+                y_offset +%= 2;
             }
         } else {
             // TODO: Logging
