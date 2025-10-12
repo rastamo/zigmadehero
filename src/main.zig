@@ -20,6 +20,43 @@ var GlobalBackBuffer: Win32OffscreenBuffer = .{
     .pitch = undefined,
 };
 
+// NOTE: XInputGetState & XInputSetState // //
+fn XInputGetStateStub(
+    _: u32,
+    _: ?*win32.XINPUT_STATE,
+) callconv(.winapi) isize {
+    return 0;
+}
+var win32XInputGetState: *const fn (
+    u32,
+    ?*win32.XINPUT_STATE,
+) callconv(.winapi) isize = XInputGetStateStub;
+
+fn XInputSetStateStub(
+    _: u32,
+    _: ?*win32.XINPUT_VIBRATION,
+) callconv(.winapi) isize {
+    return 0;
+}
+var win32XInputSetState: *const fn (
+    u32,
+    ?*win32.XINPUT_VIBRATION,
+) callconv(.winapi) isize = XInputSetStateStub;
+
+fn win32LoadXInput() void {
+    const XInputLibrary = win32.LoadLibraryA("xinput1_3.dll");
+    if (XInputLibrary) |library| {
+        if (win32.GetProcAddress(library, "XInputGetState")) |procedure| {
+            win32XInputGetState = @as(@TypeOf(win32XInputGetState), @ptrCast(procedure));
+        }
+
+        if (win32.GetProcAddress(library, "XInputSetState")) |procedure| {
+            win32XInputSetState = @as(@TypeOf(win32XInputSetState), @ptrCast(procedure));
+        }
+    }
+}
+// // // // // // // // // // // // // // // //
+
 fn win32GetWindowDimension(Window: win32.HWND) struct { width: i32, height: i32 } {
     var ClientRect: win32.RECT = undefined;
     _ = win32.GetClientRect(Window, &ClientRect);
@@ -28,15 +65,15 @@ fn win32GetWindowDimension(Window: win32.HWND) struct { width: i32, height: i32 
     return .{ .width = width, .height = height };
 }
 
-fn renderWeirdGradient(Buffer: *Win32OffscreenBuffer, x_offset: usize, y_offset: usize) void {
+fn renderWeirdGradient(Buffer: *Win32OffscreenBuffer, x_offset: i32, y_offset: i32) void {
     var x: usize = 0;
     var y: usize = 0;
     var row: [*]u8 = @ptrCast(Buffer.memory);
     while (y < Buffer.height) : (y += 1) {
         var pixel: [*]u32 = @ptrCast(@alignCast(row));
         while (x < Buffer.width) : (x += 1) {
-            const blue: u8 = (@as(u8, @intCast((x + x_offset) % 255)));
-            const green: u8 = (@as(u8, @intCast((y + y_offset) % 255)));
+            const blue: u8 = @truncate(@abs(@as(i32, @intCast(x)) + x_offset));
+            const green: u8 = @truncate(@abs(@as(i32, @intCast(y)) + y_offset));
 
             pixel[x] = (@as(u16, green) << 8 | blue);
         }
@@ -87,10 +124,10 @@ fn win32ResizeDIBSection(Buffer: *Win32OffscreenBuffer, width: i32, height: i32)
 }
 
 fn win32DisplayBufferInWindow(
+    Buffer: *Win32OffscreenBuffer,
     DeviceContext: ?win32.HDC,
     window_width: i32,
     window_height: i32,
-    Buffer: *Win32OffscreenBuffer,
 ) void {
     // TODO: Aspect ratio correction.
     // TODO: Play with stretch modes.
@@ -131,11 +168,65 @@ fn mainWindowCallback(
             // TODO: Handle this as an error - recreate window?
             running = false;
         },
+        win32.WM_SYSKEYDOWN, win32.WM_SYSKEYUP, win32.WM_KEYDOWN, win32.WM_KEYUP => {
+            const vk_code = w_param;
+            const was_down: bool = (l_param & (1 << 30) != 0);
+            const is_down: bool = (l_param & (1 << 31) == 0);
+            if (was_down != is_down) {}
+            switch (vk_code) {
+                @intFromEnum(win32.VK_A) => {
+                    running = false;
+                },
+                @intFromEnum(win32.VK_S) => {
+                    running = false;
+                },
+                @intFromEnum(win32.VK_D) => {
+                    running = false;
+                },
+                @intFromEnum(win32.VK_Q) => {
+                    running = false;
+                },
+                @intFromEnum(win32.VK_E) => {
+                    running = false;
+                },
+                @intFromEnum(win32.VK_UP) => {
+                    running = false;
+                },
+                @intFromEnum(win32.VK_LEFT) => {
+                    running = false;
+                },
+                @intFromEnum(win32.VK_DOWN) => {
+                    running = false;
+                },
+                @intFromEnum(win32.VK_RIGHT) => {
+                    running = false;
+                },
+                @intFromEnum(win32.VK_ESCAPE) => {
+                    running = false;
+                },
+                @intFromEnum(win32.VK_SPACE) => {
+                    if (is_down) {
+                        win32.OutputDebugStringA("Is Down!\n");
+                    }
+                    if (was_down) {
+                        win32.OutputDebugStringA("Was Down!\n");
+                    }
+                },
+                else => {
+                    win32.OutputDebugStringA("Key not handled\n");
+                },
+            }
+        },
         win32.WM_PAINT => {
             var Paint: win32.PAINTSTRUCT = undefined;
             const DeviceContext: ?win32.HDC = win32.BeginPaint(Window, &Paint);
             const Dimensions = win32GetWindowDimension(Window);
-            win32DisplayBufferInWindow(DeviceContext, Dimensions.width, Dimensions.height, &GlobalBackBuffer);
+            win32DisplayBufferInWindow(
+                &GlobalBackBuffer,
+                DeviceContext,
+                Dimensions.width,
+                Dimensions.height,
+            );
             _ = win32.EndPaint(Window, &Paint);
         },
         else => {
@@ -152,6 +243,8 @@ pub export fn wWinMain(
     _: [*:0]u16,
     _: u32,
 ) callconv(.winapi) c_int {
+    win32LoadXInput();
+
     const WindowClass: win32.WNDCLASSW = .{
         .style = .{ .HREDRAW = 1, .VREDRAW = 1, .OWNDC = 1 },
         .lpfnWndProc = mainWindowCallback,
@@ -189,8 +282,8 @@ pub export fn wWinMain(
             // because we are not sharing it with anyone.
             const DeviceContext: ?win32.HDC = win32.GetDC(Window);
 
-            var x_offset: usize = 0;
-            var y_offset: usize = 0;
+            var x_offset: i32 = 0;
+            var y_offset: i32 = 0;
             while (running) {
                 var message: win32.MSG = undefined;
                 while (win32.PeekMessageW(&message, null, 0, 0, win32.PM_REMOVE) != 0) {
@@ -200,18 +293,54 @@ pub export fn wWinMain(
                     _ = win32.TranslateMessage(&message);
                     _ = win32.DispatchMessageW(&message);
                 }
+                // TODO: Should we poll this more frequently?
+                for (0..win32.XUSER_MAX_COUNT) |controller_index| {
+                    var ControllerState: win32.XINPUT_STATE = undefined;
+                    const index = @as(u32, @intCast(controller_index));
+                    const state = win32XInputGetState(index, &ControllerState);
+                    if (state == @intFromEnum(win32.ERROR_SUCCESS)) {
+                        // This controller is plugged in.
+                        // TODO: See if ControllerState.dwPacketNumber increments.
+                        const Pad = &ControllerState.Gamepad;
+                        _ = (Pad.wButtons & win32.XINPUT_GAMEPAD_DPAD_UP) > 0;
+                        _ = (Pad.wButtons & win32.XINPUT_GAMEPAD_DPAD_DOWN) > 0;
+                        _ = (Pad.wButtons & win32.XINPUT_GAMEPAD_DPAD_LEFT) > 0;
+                        _ = (Pad.wButtons & win32.XINPUT_GAMEPAD_DPAD_RIGHT) > 0;
+                        _ = (Pad.wButtons & win32.XINPUT_GAMEPAD_START) > 0;
+                        _ = (Pad.wButtons & win32.XINPUT_GAMEPAD_BACK) > 0;
+                        _ = (Pad.wButtons & win32.XINPUT_GAMEPAD_LEFT_SHOULDER) > 0;
+                        _ = (Pad.wButtons & win32.XINPUT_GAMEPAD_RIGHT_SHOULDER) > 0;
+                        const a_button = (Pad.wButtons & win32.XINPUT_GAMEPAD_A) > 0;
+                        _ = (Pad.wButtons & win32.XINPUT_GAMEPAD_B) > 0;
+                        _ = (Pad.wButtons & win32.XINPUT_GAMEPAD_X) > 0;
+                        _ = (Pad.wButtons & win32.XINPUT_GAMEPAD_Y) > 0;
+
+                        const stick_x = Pad.sThumbLX;
+                        const stick_y = Pad.sThumbLY;
+                        x_offset +%= stick_x >> 12;
+                        y_offset +%= stick_y >> 12;
+                        if (a_button) {
+                            var vibration: win32.XINPUT_VIBRATION = .{
+                                .wRightMotorSpeed = 60000,
+                                .wLeftMotorSpeed = 60000,
+                            };
+                            win32.OutputDebugStringA("A BUTTON\n");
+                            _ = win32XInputSetState(index, &vibration);
+                        }
+                    } else {
+                        // The controller is not available.
+                    }
+                }
 
                 renderWeirdGradient(&GlobalBackBuffer, x_offset, y_offset);
                 const Dimensions = win32GetWindowDimension(Window);
                 win32DisplayBufferInWindow(
+                    &GlobalBackBuffer,
                     DeviceContext,
                     Dimensions.width,
                     Dimensions.height,
-                    &GlobalBackBuffer,
                 );
                 _ = win32.ReleaseDC(Window, DeviceContext);
-                x_offset +%= 1;
-                y_offset +%= 2;
             }
         } else {
             // TODO: Logging
