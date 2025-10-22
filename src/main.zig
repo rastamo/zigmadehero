@@ -25,7 +25,7 @@ fn XInputGetStateStub(
     _: u32,
     _: ?*win32.XINPUT_STATE,
 ) callconv(.winapi) isize {
-    return 0;
+    return @intFromEnum(win32.ERROR_DEVICE_NOT_CONNECTED);
 }
 var win32XInputGetState: *const fn (
     u32,
@@ -36,7 +36,7 @@ fn XInputSetStateStub(
     _: u32,
     _: ?*win32.XINPUT_VIBRATION,
 ) callconv(.winapi) isize {
-    return 0;
+    return @intFromEnum(win32.ERROR_DEVICE_NOT_CONNECTED);
 }
 var win32XInputSetState: *const fn (
     u32,
@@ -44,7 +44,13 @@ var win32XInputSetState: *const fn (
 ) callconv(.winapi) isize = XInputSetStateStub;
 
 fn win32LoadXInput() void {
-    const XInputLibrary = win32.LoadLibraryA("xinput1_3.dll");
+    // TODO: Test this on Windows 8
+    var XInputLibrary = win32.LoadLibraryA("xinput1_4.dll");
+    if (XInputLibrary) |_| {} else {
+        // TODO: Diagnostic
+        XInputLibrary = win32.LoadLibraryA("xinput1_3.dll");
+    }
+
     if (XInputLibrary) |library| {
         if (win32.GetProcAddress(library, "XInputGetState")) |procedure| {
             win32XInputGetState = @as(@TypeOf(win32XInputGetState), @ptrCast(procedure));
@@ -56,6 +62,96 @@ fn win32LoadXInput() void {
     }
 }
 // // // // // // // // // // // // // // // //
+
+fn win32InitDSound(
+    window: win32.HWND,
+    samples_per_second: u32,
+    buffer_size: u32,
+) void {
+    // Load the library
+    const DSoundLibrary = win32.LoadLibraryA("dsound.dll");
+    if (DSoundLibrary) |library| {
+        // Get a DirectSound object! - cooperative
+        if (win32.GetProcAddress(library, "DirectSoundCreate")) |procedure| {
+            const win32DirectSoundCreate = @as(
+                *const @TypeOf(win32.DirectSoundCreate),
+                @ptrCast(procedure),
+            );
+            var direct_sound: ?*win32.IDirectSound = undefined;
+            if (win32.SUCCEEDED(win32DirectSoundCreate(null, &direct_sound, null))) {
+                if (direct_sound) |ds| {
+                    var wave_format: win32.WAVEFORMATEX = .{
+                        .cbSize = 0,
+                        .nAvgBytesPerSec = 0,
+                        .nBlockAlign = 0,
+                        .nChannels = 2,
+                        .nSamplesPerSec = samples_per_second,
+                        .wBitsPerSample = 16,
+                        .wFormatTag = win32.WAVE_FORMAT_PCM,
+                    };
+                    wave_format.nBlockAlign = (wave_format.nChannels *% wave_format.wBitsPerSample) / 8;
+                    wave_format.nAvgBytesPerSec = wave_format.nSamplesPerSec *% wave_format.nBlockAlign;
+
+                    if (win32.SUCCEEDED(ds.SetCooperativeLevel(
+                        window,
+                        win32.DSSCL_PRIORITY,
+                    ))) {
+                        var buffer_description: win32.DSBUFFERDESC = .{
+                            .dwSize = @sizeOf(win32.DSBUFFERDESC),
+                            .dwFlags = win32.DSBCAPS_PRIMARYBUFFER,
+                            .dwBufferBytes = 0,
+                            .dwReserved = 0,
+                            .lpwfxFormat = null,
+                            .guid3DAlgorithm = win32.Guid.initString("00000000-0000-0000-0000-000000000000"),
+                        };
+
+                        // TODO: DSBCAPS_GLOBALFOCUS
+                        var primary_buffer: ?*win32.IDirectSoundBuffer = undefined;
+                        if (win32.SUCCEEDED(ds.CreateSoundBuffer(
+                            &buffer_description,
+                            &primary_buffer,
+                            null,
+                        ))) {
+                            if (win32.SUCCEEDED(primary_buffer.?.SetFormat(&wave_format))) {
+                                win32.OutputDebugStringA("Primary buffer format was set.\n");
+                            } else {
+                                // TODO: Diagnostic
+                            }
+                        } else {
+                            // TODO: Diagnostic
+                        }
+                    } else {
+                        //TODO: Diagnostic
+                    }
+                    // TODO: DSBCAPS_GETCURRENTPOSITION2
+                    var buffer_description: win32.DSBUFFERDESC = .{
+                        .dwSize = @sizeOf(win32.DSBUFFERDESC),
+                        .dwFlags = 0,
+                        .dwBufferBytes = buffer_size,
+                        .dwReserved = 0,
+                        .lpwfxFormat = &wave_format,
+                        .guid3DAlgorithm = win32.Guid.initString("00000000-0000-0000-0000-000000000000"),
+                    };
+
+                    var secondary_buffer: ?*win32.IDirectSoundBuffer = undefined;
+                    if (win32.SUCCEEDED(ds.CreateSoundBuffer(
+                        &buffer_description,
+                        &secondary_buffer,
+                        null,
+                    ))) {
+                        win32.OutputDebugStringA("Secondary buffer format was set.\n");
+                    } else {
+                        // TODO: Diagnostic
+                    }
+                }
+            }
+        } else {
+            // TODO: Diagnostic
+        }
+    } else {
+        // TODO: Diagnostic
+    }
+}
 
 fn win32GetWindowDimension(Window: win32.HWND) struct { width: i32, height: i32 } {
     var ClientRect: win32.RECT = undefined;
@@ -170,51 +266,58 @@ fn mainWindowCallback(
         },
         win32.WM_SYSKEYDOWN, win32.WM_SYSKEYUP, win32.WM_KEYDOWN, win32.WM_KEYUP => {
             const vk_code = w_param;
-            const was_down: bool = (l_param & (1 << 30) != 0);
-            const is_down: bool = (l_param & (1 << 31) == 0);
-            if (was_down != is_down) {}
-            switch (vk_code) {
-                @intFromEnum(win32.VK_A) => {
-                    running = false;
-                },
-                @intFromEnum(win32.VK_S) => {
-                    running = false;
-                },
-                @intFromEnum(win32.VK_D) => {
-                    running = false;
-                },
-                @intFromEnum(win32.VK_Q) => {
-                    running = false;
-                },
-                @intFromEnum(win32.VK_E) => {
-                    running = false;
-                },
-                @intFromEnum(win32.VK_UP) => {
-                    running = false;
-                },
-                @intFromEnum(win32.VK_LEFT) => {
-                    running = false;
-                },
-                @intFromEnum(win32.VK_DOWN) => {
-                    running = false;
-                },
-                @intFromEnum(win32.VK_RIGHT) => {
-                    running = false;
-                },
-                @intFromEnum(win32.VK_ESCAPE) => {
-                    running = false;
-                },
-                @intFromEnum(win32.VK_SPACE) => {
-                    if (is_down) {
-                        win32.OutputDebugStringA("Is Down!\n");
-                    }
-                    if (was_down) {
-                        win32.OutputDebugStringA("Was Down!\n");
-                    }
-                },
-                else => {
-                    win32.OutputDebugStringA("Key not handled\n");
-                },
+            const was_down: bool = l_param & (1 << 30) != 0;
+            const is_down: bool = l_param & (1 << 31) == 0;
+            const alt_key_was_down = l_param & (1 << 29) != 0;
+            if (was_down != is_down) {
+                switch (vk_code) {
+                    @intFromEnum(win32.VK_A) => {
+                        running = false;
+                    },
+                    @intFromEnum(win32.VK_S) => {
+                        running = false;
+                    },
+                    @intFromEnum(win32.VK_D) => {
+                        running = false;
+                    },
+                    @intFromEnum(win32.VK_Q) => {
+                        running = false;
+                    },
+                    @intFromEnum(win32.VK_E) => {
+                        running = false;
+                    },
+                    @intFromEnum(win32.VK_UP) => {
+                        running = false;
+                    },
+                    @intFromEnum(win32.VK_LEFT) => {
+                        running = false;
+                    },
+                    @intFromEnum(win32.VK_DOWN) => {
+                        running = false;
+                    },
+                    @intFromEnum(win32.VK_RIGHT) => {
+                        running = false;
+                    },
+                    @intFromEnum(win32.VK_ESCAPE) => {
+                        running = false;
+                    },
+                    @intFromEnum(win32.VK_SPACE) => {
+                        if (is_down) {
+                            win32.OutputDebugStringA("Is Down!\n");
+                        }
+                        if (was_down) {
+                            win32.OutputDebugStringA("Was Down!\n");
+                        }
+                    },
+                    @intFromEnum(win32.VK_F4) => {
+                        if (alt_key_was_down) {
+                            running = false;
+                        }
+                    },
+                    else => {
+                        win32.OutputDebugStringA("Key not handled\n");
+                    },
+                }
             }
         },
         win32.WM_PAINT => {
@@ -284,6 +387,8 @@ pub export fn wWinMain(
 
             var x_offset: i32 = 0;
             var y_offset: i32 = 0;
+
+            win32InitDSound(Window, 48000, 48000 * @sizeOf(i16) * 2);
             while (running) {
                 var message: win32.MSG = undefined;
                 while (win32.PeekMessageW(&message, null, 0, 0, win32.PM_REMOVE) != 0) {
