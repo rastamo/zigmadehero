@@ -4,6 +4,7 @@ pub const UNICODE = true;
 // Followed examples from: https://github.com/marlersoft/zigwin32gen
 
 var running: bool = true;
+var secondary_buffer: ?*win32.IDirectSoundBuffer = undefined;
 const Win32OffscreenBuffer = struct {
     Info: win32.BITMAPINFO,
     memory: ?*anyopaque,
@@ -133,7 +134,6 @@ fn win32InitDSound(
                         .guid3DAlgorithm = win32.Guid.initString("00000000-0000-0000-0000-000000000000"),
                     };
 
-                    var secondary_buffer: ?*win32.IDirectSoundBuffer = undefined;
                     if (win32.SUCCEEDED(ds.CreateSoundBuffer(
                         &buffer_description,
                         &secondary_buffer,
@@ -385,10 +385,23 @@ pub export fn wWinMain(
             // because we are not sharing it with anyone.
             const DeviceContext: ?win32.HDC = win32.GetDC(Window);
 
+            // Graphics test
             var x_offset: i32 = 0;
             var y_offset: i32 = 0;
 
-            win32InitDSound(Window, 48000, 48000 * @sizeOf(i16) * 2);
+            // Sound test
+            const samples_per_second: i32 = 48000;
+            const tone_hz: i32 = 256;
+            const tone_volume = 2000;
+            var running_sample_index: u32 = 0;
+            const square_wave_period: i32 = samples_per_second / tone_hz;
+            const half_square_wave_period: i32 = square_wave_period / 2;
+            const bytes_per_sample: i32 = @sizeOf(i16) * 2;
+            const secondary_buffer_size: i32 = samples_per_second * bytes_per_sample;
+
+            var is_sound_playing: bool = false;
+
+            win32InitDSound(Window, samples_per_second, secondary_buffer_size);
             while (running) {
                 var message: win32.MSG = undefined;
                 while (win32.PeekMessageW(&message, null, 0, 0, win32.PM_REMOVE) != 0) {
@@ -438,6 +451,86 @@ pub export fn wWinMain(
                 }
 
                 renderWeirdGradient(&GlobalBackBuffer, x_offset, y_offset);
+
+                // DirectSound output test
+                var play_cursor: u32 = 0;
+                var write_cursor: u32 = 0;
+
+                if (win32.SUCCEEDED(secondary_buffer.?.GetCurrentPosition(&play_cursor, &write_cursor))) {
+                    const byte_to_lock: u32 = @rem(running_sample_index * bytes_per_sample, secondary_buffer_size);
+                    var bytes_to_write: u32 = undefined;
+                    if (byte_to_lock == play_cursor) {
+                        bytes_to_write = secondary_buffer_size;
+                    } else if (byte_to_lock > play_cursor) {
+                        bytes_to_write = @as(u32, @intCast(secondary_buffer_size)) - byte_to_lock;
+                        bytes_to_write += play_cursor;
+                    } else {
+                        bytes_to_write = play_cursor - byte_to_lock;
+                    }
+
+                    // TODO: More strenuous test!
+                    // TODO: Switch to a sine wave
+                    var region1: ?*anyopaque = null;
+                    var region1_size: u32 = 0;
+                    var region2: ?*anyopaque = null;
+                    var region2_size: u32 = 0;
+                    if (win32.SUCCEEDED(secondary_buffer.?.Lock(
+                        byte_to_lock,
+                        bytes_to_write,
+                        &region1,
+                        &region1_size,
+                        &region2,
+                        &region2_size,
+                        0,
+                    ))) {
+
+                        // TODO: Assert that region1_size/region2_size is valid.
+                        // TODO: Collapse these two loops
+                        if (region1) |region| {
+                            var sample_out: [*]i16 = @ptrCast(@alignCast(region));
+                            var sample_index: u32 = 0;
+                            const region1_sample_count = @divExact(region1_size, bytes_per_sample);
+                            while (sample_index < region1_sample_count) {
+                                const sample_value: i16 = switch (@divFloor(running_sample_index, half_square_wave_period) % 2) {
+                                    0 => tone_volume,
+                                    else => -tone_volume,
+                                };
+                                sample_out += 1;
+                                sample_out[0] = sample_value;
+                                sample_out += 1;
+                                sample_out[0] = sample_value;
+
+                                sample_index += 1;
+                                running_sample_index += 1;
+                            }
+                        }
+
+                        if (region2) |region| {
+                            var sample_out: [*]i16 = @ptrCast(@alignCast(region));
+                            var sample_index: u32 = 0;
+                            const region2_sample_count = @divExact(region2_size, bytes_per_sample);
+                            while (sample_index < region2_sample_count) {
+                                const sample_value: i16 = switch (@divFloor(running_sample_index, half_square_wave_period) % 2) {
+                                    0 => tone_volume,
+                                    else => -tone_volume,
+                                };
+                                sample_out += 1;
+                                sample_out[0] = sample_value;
+                                sample_out += 1;
+                                sample_out[0] = sample_value;
+
+                                sample_index += 1;
+                                running_sample_index += 1;
+                            }
+                        }
+                        _ = secondary_buffer.?.Unlock(region1, region1_size, region2, region2_size);
+                    }
+                }
+
+                if (!is_sound_playing) {
+                    _ = secondary_buffer.?.Play(0, 0, win32.DSBPLAY_LOOPING);
+                    is_sound_playing = true;
+                }
                 const Dimensions = win32GetWindowDimension(Window);
                 win32DisplayBufferInWindow(
                     &GlobalBackBuffer,
